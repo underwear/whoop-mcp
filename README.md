@@ -1,180 +1,134 @@
-# Whoop MCP Server
+# WHOOP MCP Server
 
-A Model Context Protocol (MCP) server for accessing Whoop fitness data. Integrate your WHOOP biometric data into Claude, LLMs, and other MCP-compatible applications.
+Give your LLM access to the full depth of your [WHOOP](https://www.whoop.com) data — not just the 5 endpoints every other MCP server exposes.
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/F1iI46?referralCode=I5P95N&utm_medium=integration&utm_source=template&utm_campaign=generic)
+This server merges **WHOOP's internal app API** (the same one the mobile app uses) with the **official developer v2 API** to surface SpO2, skin temperature, sleep stages, journal-based behavior insights, and more.
 
-## Features
+## What makes this different
 
-- **Comprehensive Overview** - All your daily metrics in one call
-- **Sleep Analysis** - Deep dive into sleep performance and quality
-- **Recovery Metrics** - HRV, RHR, and recovery contributors
-- **Strain Tracking** - Day strain with heart rate zones and activities
-- **Healthspan** - Biological age and pace of aging metrics
+| Feature | Other MCPs | This one |
+|---------|-----------|----------|
+| SpO2 (blood oxygen) | No | **Yes** |
+| Skin temperature | No | **Yes** |
+| Sleep stages (light/deep/REM) | No | **Yes, with breakdown** |
+| Sleep stress | No | **Yes** |
+| Sleep debt tracking | No | **Yes, with need breakdown** |
+| Journal behavior impact | No | **Yes — which habits help/hurt recovery** |
+| Monthly recovery calendar | No | **Yes, with weekday patterns** |
+| Multi-day trend analysis | No | **Yes, 1-30 days with pattern detection** |
+| Optimal strain target | No | **Yes** |
+| Coach insights | Some | **Yes, from internal API** |
+| Healthspan / biological age | No | **Yes** |
+
+## Example
+
+Ask Claude: *"How did I sleep and how's my recovery?"*
+
+```
+Sleep: Feb 26 — 76% performance
+
+Hours: 5:42 (needed 7.9h — baseline 7.6h + debt 0.1h + strain 0.2h)
+Performance: 76% | Consistency: 56% | Efficiency: 95%
+Stages: Light 2:16 (40%) | Deep 2:15 (39%) | REM 1:12 (21%) | Awake 0:20 (5%)
+Disturbances: 7 | Sleep cycles: 4
+Respiratory rate: 15.1 rpm
+Sleep stress: 3% (30d avg: 5%)
+```
+
+```
+Recovery: Feb 27 — 46% (yellow)
+
+HRV: 46.7ms
+Resting HR: 60bpm
+SpO2: 94.4%
+Skin temp: 35.1°C
+```
+
+```
+Journal behavior impact on recovery
+
+Helps recovery:
+  76%+ SLEEP PERFORMANCE: +15%
+  CAFFEINE: +5%
+
+Hurts recovery:
+  LATE MEAL: -7%
+  ALCOHOL: -10%
+```
+
+## Tools
+
+### `whoop_get_overview`
+Daily health dashboard — recovery, sleep, strain, calories, activities, and optimal strain target.
+
+**Parameters:** `date`
+
+### `whoop_get_sleep`
+Sleep analysis with stage breakdown, debt tracking, consistency, efficiency, respiratory rate, sleep stress. Supports multi-day trend analysis with pattern detection (e.g., "Deep sleep below baseline 5 of 7 nights").
+
+**Parameters:** `date`, `days` (1-30), `detail` (summary/full)
+
+### `whoop_get_recovery`
+Recovery with HRV, resting heart rate, **SpO2**, **skin temperature**, and contributor analysis against 30-day baselines. Multi-day mode detects declining HRV trends and consecutive low-recovery streaks.
+
+**Parameters:** `date`, `days` (1-30), `detail` (summary/full)
+
+### `whoop_get_strain`
+Strain score with workout details — individual activities, HR zones, calories, distance. Shows optimal strain range. Multi-day mode flags overtraining patterns.
+
+**Parameters:** `date`, `days` (1-30), `detail` (summary/full)
+
+### `whoop_get_healthspan`
+Biological age (WHOOP Age), pace of aging. Full mode adds health tab metrics.
+
+**Parameters:** `detail` (summary/full)
+
+### `whoop_get_body`
+Height, weight, BMI, max heart rate.
+
+### `whoop_get_journal_insights`
+Which logged behaviors correlate with better or worse recovery — based on 90 days of WHOOP journal data. Returns things like "Alcohol: -10% recovery", "Sleep performance 76%+: +15% recovery".
+
+### `whoop_get_calendar`
+Monthly recovery calendar with color-coded days (green/yellow/red) and weekday pattern analysis.
+
+**Parameters:** `month` (YYYY-MM)
+
+## Architecture
+
+Each tool merges data from multiple WHOOP APIs internally:
+- **Internal app API** (`home-service`, `healthspan-service`, `behavior-impact-service`, `coaching-service`) — rich data with coach insights, trends, 30-day baselines
+- **Developer v2 API** (`/developer/v2/*`) — clean structured data with SpO2, skin temp, sleep stages
+
+The LLM never sees which API was called. It gets clean, compact plain text optimized for context windows.
+
+> **Note:** Internal API endpoints are reverse-engineered from the WHOOP mobile app and may change without notice. The developer v2 API is stable and officially supported.
+
+### Server-side pattern detection
+Multi-day queries automatically detect and flag:
+- Declining HRV trends
+- Consecutive low-recovery days (3+)
+- Low sleep performance streaks
+- Missing rest days
+- Deep sleep deficits
+
+## Prerequisites
+
+- [Bun](https://bun.sh) runtime (v1.0+)
+- A WHOOP membership with **email/password** login (Google/Apple SSO accounts need to set a password in WHOOP app settings first)
+- An MCP client — [Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Cursor, etc.
 
 ## Quick Start
 
-1. **Clone the repository:**
-
-```bash
-git clone https://github.com/yourusername/whoop-mcp.git
-cd whoop-mcp
-```
-
-2. **Create a `.env` file with your WHOOP credentials:**
-
-```bash
-echo "WHOOP_EMAIL=your-email@example.com" > .env
-echo "WHOOP_PASSWORD=your-password" >> .env
-echo "PORT=3000" >> .env
-```
-
-Or set as environment variables:
-
-```bash
-export WHOOP_EMAIL='your-email@example.com'
-export WHOOP_PASSWORD='your-password'
-```
-
-3. **Install dependencies:**
-
-```bash
-bun install
-```
-
-4. **Start the server:**
-
-```bash
-bun run start
-```
-
-Or for development with hot reload:
-
-```bash
-bun run dev
-```
-
-The server will run on `http://localhost:3000/mcp` by default.
-
-## Docker Deployment
-
-1. **Create a `.env` file with your credentials:**
-
-```bash
-cp .env.example .env
-# Edit .env with your actual credentials
-```
-
-2. **Build the Docker image:**
-
-```bash
-docker build -t whoop-mcp .
-```
-
-3. **Run the container:**
-
-```bash
-docker run -d \
-  --name whoop-mcp \
-  whoop-mcp
-```
-
-The `--env-file .env` flag automatically loads all environment variables from your `.env` file.
-
-4. **View logs:**
-
-```bash
-docker logs -f whoop-mcp
-```
-
-5. **Stop the container:**
-
-```bash
-docker stop whoop-mcp
-```
-
-The Docker image is based on the official Bun Alpine image. The container includes health checks to monitor the server's status.
-
-## Smithery Deployment
-
-This server is configured to work with [Smithery](https://smithery.ai/), a platform for deploying MCP servers. When deployed on Smithery:
-
-1. **Configuration via Query Parameters**: Smithery passes your credentials as query parameters to the `/mcp` endpoint (defined in `smithery.yaml`):
-
-   - `whoopEmail` - Your Whoop account email
-   - `whoopPassword` - Your Whoop account password
-   - `mcpAuthToken` - Optional authentication token
-
-2. **Automatic Configuration**: The server automatically extracts these from query parameters when running on Smithery, so you don't need to set environment variables manually.
-
-3. **Deploy Button**: Use the Railway deploy button above for quick deployment, or follow [Smithery's documentation](https://smithery.ai/docs) for other deployment options.
-
-The `smithery.yaml` file in the repository root defines the configuration schema that Smithery uses to collect your credentials securely.
-
-## Configuration
-
-### Credentials Configuration
-
-The server supports two methods for providing credentials:
-
-1. **Query Parameters** (used by Smithery): Pass credentials as query parameters to the `/mcp` endpoint
-
-   - `whoopEmail` - Your Whoop account email
-   - `whoopPassword` - Your Whoop account password
-   - `mcpAuthToken` - Optional authentication token
-
-2. **Environment Variables** (used for local/Docker deployment):
-
-| Variable         | Required | Default | Description                                    |
-| ---------------- | -------- | ------- | ---------------------------------------------- |
-| `WHOOP_EMAIL`    | Yes      | -       | Your Whoop account email                       |
-| `WHOOP_PASSWORD` | Yes      | -       | Your Whoop account password                    |
-| `MCP_AUTH_TOKEN` | No       | -       | Optional authentication token for MCP requests |
-| `PORT`           | No       | 3000    | Server port                                    |
-
-The server will check query parameters first, then fall back to environment variables if not provided.
-
-### Optional Authentication
-
-To protect your MCP server from unauthorized access, you can set the `MCP_AUTH_TOKEN` environment variable. When set, all requests to the `/mcp` endpoint must include a matching Bearer token:
-
-```bash
-export MCP_AUTH_TOKEN='your-secret-token-here'
-```
-
-Or add it to your `.env` file:
-
-```bash
-echo "MCP_AUTH_TOKEN=your-secret-token-here" >> .env
-```
-
-Clients must then include the token in the Authorization header:
-
-```bash
-curl -X POST http://localhost:3000/mcp \
-  -H "Authorization: Bearer your-secret-token-here" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
-```
-
-**Note:** If `MCP_AUTH_TOKEN` is not set, the server will accept all requests (useful for local development).
-
-## Using with Claude Desktop
-
-Add this configuration to your Claude Desktop config file:
-
-**MacOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Windows**: `%APPDATA%/Claude/claude_desktop_config.json`
-
-### Without Authentication (Local Development)
+### Claude Code / Claude Desktop (stdio)
 
 ```json
 {
   "mcpServers": {
     "whoop": {
+      "type": "stdio",
       "command": "bun",
-      "args": ["run", "/absolute/path/to/whoop-mcp/index.ts"],
+      "args": ["run", "/path/to/whoop-mcp/stdio.ts"],
       "env": {
         "WHOOP_EMAIL": "your-email@example.com",
         "WHOOP_PASSWORD": "your-password"
@@ -184,186 +138,38 @@ Add this configuration to your Claude Desktop config file:
 }
 ```
 
-### With Authentication (Recommended)
+Claude Desktop config location: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%/Claude/claude_desktop_config.json` (Windows).
 
-```json
-{
-  "mcpServers": {
-    "whoop": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/whoop-mcp/index.ts"],
-      "env": {
-        "WHOOP_EMAIL": "your-email@example.com",
-        "WHOOP_PASSWORD": "your-password",
-        "MCP_AUTH_TOKEN": "your-secret-token-here"
-      }
-    }
-  }
-}
+### Local dev
+
+```bash
+git clone https://github.com/underwear/whoop-mcp.git
+cd whoop-mcp
+bun install
+export WHOOP_EMAIL='your-email@example.com'
+export WHOOP_PASSWORD='your-password'
+bun run stdio.ts
 ```
 
-Replace `/absolute/path/to/whoop-mcp/` with the actual path to this directory.
+### HTTP server (Smithery, Railway, Docker)
 
-## Available Tools
-
-The server provides five main tools for accessing your Whoop data:
-
-### whoop_get_overview
-
-Retrieves comprehensive Whoop overview data for a specific date in a single API call.
-
-**Parameters:**
-
-- `date` (optional) - Date in YYYY-MM-DD format. Defaults to today.
-
-**Returns:**
-
-- **Cycle Info**: Cycle ID, day, date display, sleep state
-- **Live Metrics**: Recovery score, day strain, sleep hours, calories burned
-- **Gauges**: All score gauges from the home screen
-- **Activities**: Today's activities with scores and times
-- **Key Statistics**: HRV, RHR, VO2 Max, respiratory rate, steps with 30-day trends
-- **Journal**: Journal completion status
-
-**Example usage:**
-
-```
-"Can you check my Whoop data for today?"
-"What was my recovery score on 2024-01-15?"
-"Show me my Whoop stats from yesterday"
-"How many steps did I take and what were my activities today?"
+```bash
+bun run index.ts  # or bun run start
 ```
 
-### whoop_get_sleep
+See `smithery.yaml` for Smithery config, `Dockerfile` for container deployment.
 
-Retrieves detailed sleep analysis and performance metrics.
+## Auth
 
-**Parameters:**
-
-- `date` (optional) - Date in YYYY-MM-DD format. Defaults to today.
-
-**Returns:**
-
-- Sleep performance score
-- Hours vs needed
-- Sleep consistency
-- Sleep efficiency
-- High sleep stress percentage
-- Personalized insights and recommendations
-
-**Example usage:**
-
-```
-"How did I sleep last night?"
-"What's my sleep performance for October 27?"
-"Why is my sleep score low today?"
-```
-
-### whoop_get_recovery
-
-Retrieves comprehensive recovery deep dive analysis including contributors and trends.
-
-**Parameters:**
-
-- `date` (optional) - Date in YYYY-MM-DD format. Defaults to today.
-
-**Returns:**
-
-- Recovery score (0-100%)
-- Recovery contributors:
-  - Heart Rate Variability (HRV)
-  - Resting Heart Rate (RHR)
-  - Respiratory Rate
-  - Sleep Performance
-- Trend indicators vs 30-day baseline
-- Personalized coach insights
-
-**Example usage:**
-
-```
-"What's my recovery score today?"
-"Show me my recovery analysis for yesterday"
-"How is my HRV trending compared to my baseline?"
-```
-
-### whoop_get_strain
-
-Retrieves comprehensive strain deep dive analysis including contributors, activities, and trends.
-
-**Parameters:**
-
-- `date` (optional) - Date in YYYY-MM-DD format. Defaults to today.
-
-**Returns:**
-
-- Strain score with target and optimal ranges
-- Strain contributors:
-  - Heart Rate Zones 1-3
-  - Heart Rate Zones 4-5
-  - Strength Activity Time
-  - Steps
-- Today's activities with individual strain scores
-- Trend indicators vs 30-day baseline
-- Personalized coach insights
-
-**Example usage:**
-
-```
-"What's my strain score today?"
-"Show me my strain analysis and activities"
-"How much time did I spend in heart rate zones 4-5?"
-"Did I reach my optimal strain target?"
-```
-
-### whoop_get_healthspan
-
-Retrieves comprehensive healthspan analysis including WHOOP Age (biological age) and pace of aging metrics.
-
-**Parameters:**
-
-- `date` (optional) - Date in YYYY-MM-DD format. Defaults to today.
-
-**Returns:**
-
-- WHOOP Age (biological age)
-- Age status (Younger, Same, Older vs. chronological age)
-- Years difference from chronological age
-- Pace of aging (e.g., 0.5x = aging slower than average)
-- Comparison with previous period
-- Weekly date range for healthspan measurement
-
-**Example usage:**
-
-```
-"What's my WHOOP Age?"
-"Show me my biological age and healthspan data"
-"How fast am I aging compared to average?"
-"Am I aging slower or faster than my chronological age?"
-```
-
-## How It Works
-
-The server automatically handles authentication:
-
-1. Logs in with your email/password on first request
-2. Stores the access token (valid for 24 hours)
-3. Automatically re-authenticates before token expires
-4. Retries failed requests after re-authentication
+Uses WHOOP's Cognito authentication (same as the mobile app). Email + password → access token, auto-refreshed. Tokens stored in memory only.
 
 ## Security
 
-### Best Practices
-
-- **Never commit** your `.env` file or share your WHOOP credentials
-- The server stores Whoop authentication tokens in memory only (they expire after 24 hours)
-- **Use `MCP_AUTH_TOKEN`** when exposing the server to a network or untrusted clients
-- Generate strong, random tokens for `MCP_AUTH_TOKEN` (e.g., using `openssl rand -hex 32`)
-- When running in production or on a network, **always** set `MCP_AUTH_TOKEN`
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- Credentials only via environment variables, never hardcoded
+- Tokens in memory only (expire after 24 hours, auto-refresh)
+- Optional `MCP_AUTH_TOKEN` for protecting the HTTP endpoint
+- No data persistence, no logging of health data
 
 ## License
 
-MIT - see LICENSE file for details
+MIT
