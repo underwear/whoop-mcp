@@ -1,212 +1,205 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WhoopClient } from "../whoop-client";
+import type { WhoopClient } from "../whoop-client";
+import { today, num, msToHours, toolResult, toolError, shortDate } from "./helpers";
 
-export function registerStrainTools(
-  server: McpServer,
-  whoopClient: WhoopClient
-) {
+function formatZones(z: any): string {
+  if (!z) return "";
+  const total = (z.zone_zero_milli || 0) + (z.zone_one_milli || 0) + (z.zone_two_milli || 0) +
+    (z.zone_three_milli || 0) + (z.zone_four_milli || 0) + (z.zone_five_milli || 0);
+  if (total === 0) return "";
+  const p = (ms: number) => Math.round(ms / total * 100);
+  return `Z0-1: ${p(z.zone_zero_milli + z.zone_one_milli)}% | Z2-3: ${p(z.zone_two_milli + z.zone_three_milli)}% | Z4-5: ${p(z.zone_four_milli + z.zone_five_milli)}%`;
+}
+
+function formatZonesDetailed(z: any): string {
+  if (!z) return "";
+  return [
+    `  Z0: ${msToHours(z.zone_zero_milli || 0)}`,
+    `  Z1: ${msToHours(z.zone_one_milli || 0)}`,
+    `  Z2: ${msToHours(z.zone_two_milli || 0)}`,
+    `  Z3: ${msToHours(z.zone_three_milli || 0)}`,
+    `  Z4: ${msToHours(z.zone_four_milli || 0)}`,
+    `  Z5: ${msToHours(z.zone_five_milli || 0)}`,
+  ].join("\n");
+}
+
+export function registerStrainTool(server: McpServer, client: WhoopClient) {
   server.registerTool(
     "whoop_get_strain",
     {
-      title: "Get Whoop Strain Deep Dive",
+      title: "WHOOP Strain",
       description:
-        "Get comprehensive strain analysis including day strain score, heart rate zones, strength training time, steps, activities, and strain contributors with trends",
+        "Strain and workout analysis: daily exertion score, individual activities with HR zones, calories, and optimal strain targets. Supports multi-day trend analysis via the 'days' parameter.",
       inputSchema: {
-        date: z
-          .string()
-          .optional()
-          .describe(
-            "Date in YYYY-MM-DD format (defaults to today if not provided)"
-          ),
-      },
-      outputSchema: {
-        title: z.string(),
-        strainScore: z.object({
-          score: z.string(),
-          percentage: z.number(),
-          target: z.number().nullable(),
-          lowerOptimal: z.number().nullable(),
-          higherOptimal: z.number().nullable(),
-        }),
-        contributors: z.array(
-          z.object({
-            id: z.string(),
-            title: z.string(),
-            value: z.string(),
-            baseline: z.string(),
-            status: z.string(),
-            icon: z.string(),
-          })
-        ),
-        activities: z.array(
-          z.object({
-            title: z.string(),
-            strainScore: z.string(),
-            startTime: z.string(),
-            endTime: z.string(),
-            type: z.string(),
-            status: z.string(),
-          })
-        ),
-        coachInsight: z.string().nullable(),
+        date: z.string().optional().describe("Date YYYY-MM-DD (default: today)"),
+        days: z.number().min(1).max(30).optional().describe("Number of days for trend (default: 1)"),
+        detail: z.enum(["summary", "full"]).optional().describe("Detail level (default: summary)"),
       },
     },
-    async ({ date }) => {
+    async ({ date, days, detail }) => {
       try {
-        const data = await whoopClient.getStrainDeepDive(date);
+        const d = date || today();
+        const n = days || 1;
+        const det = detail || "summary";
 
-        const scoreSection = data.sections.find((s: any) =>
-          s.items.some((i: any) => i.type === "SCORE_GAUGE")
-        );
-        const scoreGauge = scoreSection?.items.find(
-          (i: any) => i.type === "SCORE_GAUGE"
-        )?.content;
+        if (n === 1) {
+          // Single day: internal strain deep dive + v2 workouts
+          const [deepDive, workouts, widget] = await Promise.all([
+            client.getDeepDiveStrain(d).catch(() => null),
+            client.getWorkoutsV2(10),
+            client.getWidgetOverview().catch(() => null),
+          ]);
 
-        const contributorsSection = data.sections.find((s: any) =>
-          s.items.some((i: any) => i.type === "CONTRIBUTORS_TILE")
-        );
-        const contributorsTile = contributorsSection?.items.find(
-          (i: any) => i.type === "CONTRIBUTORS_TILE"
-        )?.content;
-
-        const contributors =
-          contributorsTile?.metrics.map((metric: any) => ({
-            id: metric.id,
-            title: metric.title,
-            value: metric.status,
-            baseline: metric.status_subtitle,
-            status: metric.status_type,
-            icon: metric.icon,
-          })) || [];
-
-        const activitySections = data.sections.filter((s: any) =>
-          s.items.some((i: any) => i.type === "ACTIVITY")
-        );
-        const activities: any[] = [];
-        activitySections.forEach((section: any) => {
-          section.items.forEach((item: any) => {
-            if (item.type === "ACTIVITY") {
-              activities.push({
-                title: item.content.title,
-                strainScore: item.content.score_display,
-                startTime: item.content.start_time_text,
-                endTime: item.content.end_time_text,
-                type: item.content.type,
-                status: item.content.status,
-              });
-            }
+          // Filter workouts to this date
+          const dayStart = new Date(d + "T00:00:00").getTime();
+          const dayEnd = dayStart + 86400000;
+          const dayWorkouts = workouts.filter((w: any) => {
+            const t = new Date(w.start).getTime();
+            return t >= dayStart - 86400000 && t <= dayEnd; // generous range
           });
-        });
 
-        const coachInsight =
-          contributorsTile?.footer?.items?.find(
-            (i: any) => i.type === "WHOOP_COACH_VOW"
-          )?.content?.vow || null;
+          // Extract strain score from deep dive
+          let strainScore = "—";
+          let optTarget = "";
+          if (deepDive) {
+            const scoreSection = deepDive.sections?.find((s: any) =>
+              s.items?.some((i: any) => i.type === "SCORE_GAUGE")
+            );
+            const gauge = scoreSection?.items?.find((i: any) => i.type === "SCORE_GAUGE")?.content;
+            if (gauge) {
+              strainScore = gauge.score_display || "—";
+              if (gauge.score_target != null) {
+                const lo = gauge.lower_optimal_percentage;
+                const hi = gauge.higher_optimal_percentage;
+                if (lo != null && hi != null) {
+                  optTarget = ` (optimal: ${num(lo * 21)}–${num(hi * 21)})`;
+                }
+              }
+            }
+          }
 
-        const output = {
-          title: data.header.title,
-          strainScore: {
-            score: scoreGauge?.score_display || "N/A",
-            percentage: scoreGauge?.gauge_fill_percentage || 0,
-            target: scoreGauge?.score_target || null,
-            lowerOptimal: scoreGauge?.lower_optimal_percentage || null,
-            higherOptimal: scoreGauge?.higher_optimal_percentage || null,
-          },
-          contributors,
-          activities,
-          coachInsight,
-        };
+          // Fallback to widget
+          if (strainScore === "—" && widget) {
+            strainScore = widget.strain_string || "—";
+            const opt = widget.optimal_strain_recommendation;
+            if (opt) {
+              optTarget = ` (optimal: ${num(opt.lower_optimal_strain)}–${num(opt.upper_optimal_strain)})`;
+            }
+          }
+
+          const cals = widget?.calories_string || "—";
+
+          const lines = [
+            `Strain: ${shortDate(d + "T00:00:00")} — ${strainScore}${optTarget}`,
+            `Calories: ${cals}`,
+          ];
+
+          if (dayWorkouts.length > 0) {
+            lines.push("", "Activities:");
+            for (const w of dayWorkouts) {
+              const s = w.score || {};
+              const duration = w.start && w.end
+                ? msToHours(new Date(w.end).getTime() - new Date(w.start).getTime())
+                : "—";
+              lines.push(
+                `  ${w.sport_name} — strain ${num(s.strain)}, avg HR ${s.average_heart_rate || "—"}, max HR ${s.max_heart_rate || "—"}, ${duration}, ${Math.round((s.kilojoule || 0) / 4.184)} kcal`
+              );
+
+              if (det === "full" && s.zone_durations) {
+                lines.push(`    HR zones: ${formatZones(s.zone_durations)}`);
+                if (s.distance_meter) lines.push(`    Distance: ${(s.distance_meter / 1000).toFixed(1)}km`);
+              }
+            }
+          }
+
+          // Coach insight from deep dive
+          if (det === "full" && deepDive) {
+            const contribSection = deepDive.sections?.find((s: any) =>
+              s.items?.some((i: any) => i.type === "CONTRIBUTORS_TILE")
+            );
+            const tile = contribSection?.items?.find((i: any) => i.type === "CONTRIBUTORS_TILE")?.content;
+
+            if (tile?.metrics) {
+              lines.push("", "Contributors (vs 30-day baseline):");
+              for (const m of tile.metrics) {
+                lines.push(`  ${m.title}: ${m.status} (baseline: ${m.status_subtitle})`);
+              }
+            }
+
+            const insight = tile?.footer?.items?.find((i: any) => i.type === "WHOOP_COACH_VOW")?.content?.vow;
+            if (insight) lines.push("", `Coach insight: ${insight}`);
+          }
+
+          return toolResult(lines.join("\n"));
+        }
+
+        // Multi-day trend
+        const [cycles, workouts] = await Promise.all([
+          client.getCyclesV2(n),
+          client.getWorkoutsV2(n * 3), // rough estimate
+        ]);
+
+        if (!cycles.length) return toolResult("No strain data available.");
+
+        let totalStrain = 0, count = 0;
+        const dailyLines: string[] = [];
+
+        for (const c of cycles) {
+          const s = c.score || {};
+          if (s.strain == null) continue;
+          count++;
+          totalStrain += s.strain;
+
+          // Find workouts for this cycle
+          const cycleStart = new Date(c.start).getTime();
+          const cycleEnd = c.end ? new Date(c.end).getTime() : Date.now();
+          const cycleWorkouts = workouts.filter((w: any) => {
+            const t = new Date(w.start).getTime();
+            return t >= cycleStart && t <= cycleEnd;
+          });
+
+          const workoutNames = cycleWorkouts.map((w: any) => w.sport_name).join(", ") || "rest";
+          dailyLines.push(`  ${shortDate(c.start)}: strain ${num(s.strain)} | ${workoutNames}`);
+        }
+
+        if (count === 0) return toolResult("No scored cycles in this range.");
+
+        const avgStrain = (totalStrain / count).toFixed(1);
+        const strains = cycles.filter((c: any) => c.score?.strain != null).map((c: any) => c.score.strain);
+        const maxStrain = num(Math.max(...strains));
+        const minStrain = num(Math.min(...strains));
 
         const lines = [
-          "🔥 STRAIN DEEP DIVE",
-          "═══════════════════",
+          `Strain trend: ${shortDate(cycles[cycles.length - 1].start)} – ${shortDate(cycles[0].start)} (${count} days)`,
           "",
-          `📅 ${data.header.title}`,
+          `Avg daily strain: ${avgStrain} | Range: ${minStrain}–${maxStrain}`,
+          `Total workouts: ${workouts.length}`,
           "",
-          "🎯 STRAIN SCORE",
-          "───────────────",
-          `  ${output.strainScore.score} (${Math.round(output.strainScore.percentage * 100)}%)`,
+          "Daily:",
+          ...dailyLines,
         ];
 
-        if (output.strainScore.target) {
-          lines.push(
-            `  Target: ${Math.round(output.strainScore.target * 100)}%`
-          );
+        // Patterns
+        const patterns: string[] = [];
+        let consecHigh = 0, maxConsecHigh = 0;
+        for (const s of strains) {
+          if (s > 14) { consecHigh++; maxConsecHigh = Math.max(maxConsecHigh, consecHigh); }
+          else consecHigh = 0;
         }
-        if (
-          output.strainScore.lowerOptimal &&
-          output.strainScore.higherOptimal
-        ) {
-          lines.push(
-            `  Optimal Range: ${Math.round(output.strainScore.lowerOptimal * 100)}-${Math.round(output.strainScore.higherOptimal * 100)}%`
-          );
-        }
+        if (maxConsecHigh >= 3) patterns.push(`${maxConsecHigh} consecutive high-strain days (>14). Consider active recovery.`);
 
-        lines.push("", "📊 CONTRIBUTORS", "───────────────");
+        const restDays = strains.filter((s: number) => s < 4).length;
+        if (restDays === 0 && count >= 7) patterns.push("No rest days in this period.");
 
-        contributors.forEach((contributor: any) => {
-          const statusEmoji =
-            contributor.status === "HIGHER_POSITIVE"
-              ? "📈"
-              : contributor.status === "LOWER_POSITIVE"
-                ? "📉"
-                : contributor.status === "HIGHER_NEGATIVE"
-                  ? "⬆️"
-                  : contributor.status === "LOWER_NEGATIVE"
-                    ? "⬇️"
-                    : contributor.status === "EQUAL"
-                      ? "➡️"
-                      : "◯";
-
-          lines.push(
-            `  ${statusEmoji} ${contributor.title}`,
-            `     Current: ${contributor.value}`,
-            `     Baseline (30-day): ${contributor.baseline}`,
-            ""
-          );
-        });
-
-        if (activities.length > 0) {
-          lines.push("🏃 TODAY'S ACTIVITIES", "─────────────────");
-          activities.forEach((activity: any) => {
-            lines.push(
-              `  ${activity.title}`,
-              `     Strain: ${activity.strainScore}`,
-              `     Time: ${activity.startTime} - ${activity.endTime}`,
-              `     Type: ${activity.type}`,
-              ""
-            );
-          });
+        if (patterns.length > 0) {
+          lines.push("", "Patterns:");
+          patterns.forEach(p => lines.push(`  ⚠ ${p}`));
         }
 
-        if (output.coachInsight) {
-          lines.push(
-            "💡 COACH INSIGHT",
-            "───────────────",
-            output.coachInsight,
-            ""
-          );
-        }
-
-        const formattedText = lines.join("\n");
-
-        return {
-          content: [{ type: "text", text: formattedText }],
-          structuredContent: output,
-        };
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error";
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error fetching Whoop strain data: ${errorMessage}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolResult(lines.join("\n"));
+      } catch (e: any) {
+        return toolError(e.message);
       }
     }
   );

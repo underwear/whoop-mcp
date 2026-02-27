@@ -1,10 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WhoopClient } from "./whoop-client";
-import { registerHomeTools } from "./tools/home";
-import { registerSleepTools } from "./tools/sleep";
-import { registerRecoveryTools } from "./tools/recovery";
-import { registerStrainTools } from "./tools/strain";
-import { registerHealthspanTools } from "./tools/healthspan";
+import { registerOverviewTool } from "./tools/overview";
+import { registerSleepTool } from "./tools/sleep";
+import { registerRecoveryTool } from "./tools/recovery";
+import { registerStrainTool } from "./tools/strain";
+import { registerHealthspanTool } from "./tools/healthspan";
+import { registerBodyTool } from "./tools/body";
+import { registerJournalTool } from "./tools/journal";
+import { registerCalendarTool } from "./tools/calendar";
 
 export interface WhoopMcpServerConfig {
   email?: string;
@@ -14,16 +17,19 @@ export interface WhoopMcpServerConfig {
 export function createWhoopMcpServer(config: WhoopMcpServerConfig) {
   const server = new McpServer({
     name: "whoop-mcp-server",
-    version: "1.0.0",
+    version: "2.0.0",
   });
 
-  const whoopClient = new WhoopClient(config);
+  const client = new WhoopClient(config);
 
-  registerHomeTools(server, whoopClient);
-  registerSleepTools(server, whoopClient);
-  registerRecoveryTools(server, whoopClient);
-  registerStrainTools(server, whoopClient);
-  registerHealthspanTools(server, whoopClient);
+  registerOverviewTool(server, client);
+  registerSleepTool(server, client);
+  registerRecoveryTool(server, client);
+  registerStrainTool(server, client);
+  registerHealthspanTool(server, client);
+  registerBodyTool(server, client);
+  registerJournalTool(server, client);
+  registerCalendarTool(server, client);
 
   return server;
 }

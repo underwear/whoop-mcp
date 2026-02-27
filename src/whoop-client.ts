@@ -1,416 +1,203 @@
-import type {
-  WhoopConfig,
-  WhoopHeaders,
-  HomeResponse,
-  LoginResponse,
-  TokenData,
-} from "./types";
+export interface WhoopConfig {
+  email?: string;
+  password?: string;
+  baseUrl?: string;
+}
+
+interface TokenData {
+  accessToken: string;
+  expiresAt: number;
+  userId?: string;
+  accountId?: string;
+}
 
 export class WhoopClient {
   private config: WhoopConfig;
   private baseUrl: string;
   private tokenData: TokenData | null = null;
-  private readonly CLIENT_ID = "";
 
   constructor(config: WhoopConfig) {
     this.config = config;
     this.baseUrl = config.baseUrl || "https://api.prod.whoop.com";
   }
 
-  /**
-   * Login with email and password to get access token
-   */
-  async login(email?: string, password?: string): Promise<void> {
-    const loginEmail = email || this.config.email;
-    const loginPassword = password || this.config.password;
+  // ─── Auth ────────────────────────────────────────────────────
 
-    if (!loginEmail || !loginPassword) {
-      throw new Error("Email and password are required for login");
-    }
+  async login(): Promise<void> {
+    const email = this.config.email;
+    const password = this.config.password;
+    if (!email || !password) throw new Error("Email and password required");
 
-    const url = `${this.baseUrl}/auth-service/v3/whoop`;
+    const resp = await fetch(`${this.baseUrl}/auth-service/v3/whoop`, {
+      method: "POST",
+      headers: {
+        Host: "api.prod.whoop.com",
+        Accept: "*/*",
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+        "User-Agent": "WHOOP/5.430.0 (iOS; 17.0)",
+      },
+      body: JSON.stringify({
+        AuthParameters: { USERNAME: email, PASSWORD: password },
+        ClientId: "37365lrcda1js3fapqfe2n40eh",
+        AuthFlow: "USER_PASSWORD_AUTH",
+      }),
+    });
 
+    if (!resp.ok) throw new Error(`Login failed: ${resp.status}`);
+
+    const data = await resp.json() as any;
+    const authResult = data.AuthenticationResult;
+    if (!authResult) throw new Error("No auth result");
+
+    // Extract userId from JWT
+    let userId: string | undefined;
+    let accountId: string | undefined;
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          Host: "api.prod.whoop.com",
-          Accept: "*/*",
-          "Content-Type": "application/x-amz-json-1.1",
-          "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
-        },
-        body: JSON.stringify({
-          AuthParameters: {
-            USERNAME: loginEmail,
-            PASSWORD: loginPassword,
-          },
-          ClientId: this.CLIENT_ID,
-          AuthFlow: "USER_PASSWORD_AUTH",
-        }),
-      });
+      const payload = JSON.parse(
+        Buffer.from(authResult.AccessToken.split(".")[1], "base64").toString()
+      );
+      userId = payload["custom:user_id"];
+      accountId = payload["custom:account_id"];
+    } catch {}
 
-      if (!response.ok) {
-        throw new Error(
-          `Login failed: ${response.status} ${response.statusText}`
-        );
-      }
-
-      const data = (await response.json()) as LoginResponse;
-
-      if (!data.AuthenticationResult) {
-        throw new Error("Login failed: No authentication result received");
-      }
-
-      this.tokenData = {
-        accessToken: data.AuthenticationResult.AccessToken,
-        expiresAt: Date.now() + data.AuthenticationResult.ExpiresIn * 1000,
-      };
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to login: ${error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Ensure we have a valid access token, logging in if necessary
-   */
-  private async ensureValidToken(): Promise<void> {
-    if (!this.tokenData) {
-      await this.login();
-      return;
-    }
-
-    const expiresInMs = this.tokenData.expiresAt - Date.now();
-    if (expiresInMs < 5 * 60 * 1000) {
-      await this.login();
-    }
-  }
-
-  private async getHeaders(): Promise<WhoopHeaders> {
-    await this.ensureValidToken();
-
-    if (!this.tokenData) {
-      throw new Error("No valid authentication token available");
-    }
-
-    return {
-      Host: "api.prod.whoop.com",
-      Authorization: `Bearer ${this.tokenData.accessToken}`,
-      Accept: "*/*",
-      "User-Agent": "iOS",
-      "Content-Type": "application/json",
-      "X-WHOOP-Device-Platform": "iOS",
-      "X-WHOOP-Time-Zone": Intl.DateTimeFormat().resolvedOptions().timeZone,
-      Locale: "en_US",
-      Currency: "USD",
+    this.tokenData = {
+      accessToken: authResult.AccessToken,
+      expiresAt: Date.now() + authResult.ExpiresIn * 1000,
+      userId,
+      accountId,
     };
   }
 
-  /**
-   * Get comprehensive home data for a specific date
-   */
-  async getHomeData(date?: string): Promise<HomeResponse> {
-    const dateParam = date || new Date().toISOString().split("T")[0];
-    const url = `${this.baseUrl}/home-service/v1/home?date=${dateParam}`;
-
-    let retried = false;
-
-    while (true) {
-      try {
-        const headers = await this.getHeaders();
-        const response = await fetch(url, {
-          method: "GET",
-          headers: Object.fromEntries(
-            Object.entries(headers).map(([key, value]) => [
-              key,
-              value as string,
-            ])
-          ),
-        });
-
-        if (!response.ok) {
-          if (response.status === 401 && !retried) {
-            retried = true;
-            await this.login();
-            continue;
-          }
-
-          throw new Error(
-            `Whoop API error: ${response.status} ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        return data as HomeResponse;
-      } catch (error) {
-        if (
-          retried ||
-          !(error instanceof Error && error.message.includes("401"))
-        ) {
-          if (error instanceof Error) {
-            throw new Error(`Failed to fetch home data: ${error.message}`);
-          }
-          throw error;
-        }
-
-        retried = true;
-        await this.login();
-      }
+  private async ensureToken(): Promise<void> {
+    if (!this.tokenData || this.tokenData.expiresAt - Date.now() < 5 * 60 * 1000) {
+      await this.login();
     }
   }
 
-  /**
-   * Get sleep deep dive data for a specific date
-   */
-  async getSleepDeepDive(date?: string): Promise<any> {
-    const dateParam = date || new Date().toISOString().split("T")[0];
-    const url = `${this.baseUrl}/home-service/v1/deep-dive/sleep?date=${dateParam}`;
-
-    let retried = false;
-
-    while (true) {
-      try {
-        const headers = await this.getHeaders();
-        const response = await fetch(url, {
-          method: "GET",
-          headers: Object.fromEntries(
-            Object.entries(headers).map(([key, value]) => [
-              key,
-              value as string,
-            ])
-          ),
-        });
-
-        if (!response.ok) {
-          if (response.status === 401 && !retried) {
-            retried = true;
-            await this.login();
-            continue;
-          }
-
-          throw new Error(
-            `Whoop API error: ${response.status} ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        return data;
-      } catch (error) {
-        if (
-          retried ||
-          !(error instanceof Error && error.message.includes("401"))
-        ) {
-          if (error instanceof Error) {
-            throw new Error(`Failed to fetch sleep data: ${error.message}`);
-          }
-          throw error;
-        }
-
-        retried = true;
-        await this.login();
-      }
-    }
+  get userId(): string {
+    return this.tokenData?.userId || "";
   }
 
-  /**
-   * Get recovery deep dive data for a specific date
-   */
-  async getRecoveryDeepDive(date?: string): Promise<any> {
-    const dateParam = date || new Date().toISOString().split("T")[0];
-    const url = `${this.baseUrl}/home-service/v1/deep-dive/recovery?date=${dateParam}`;
+  // ─── HTTP ────────────────────────────────────────────────────
 
-    let retried = false;
+  private async request<T = any>(path: string, retried = false): Promise<T> {
+    await this.ensureToken();
 
-    while (true) {
-      try {
-        const headers = await this.getHeaders();
-        const response = await fetch(url, {
-          method: "GET",
-          headers: Object.fromEntries(
-            Object.entries(headers).map(([key, value]) => [
-              key,
-              value as string,
-            ])
-          ),
-        });
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      headers: {
+        Authorization: `Bearer ${this.tokenData!.accessToken}`,
+        Host: "api.prod.whoop.com",
+        Accept: "*/*",
+        "User-Agent": "WHOOP/5.430.0 (iOS; 17.0)",
+        "Content-Type": "application/json",
+        "X-WHOOP-Device-Platform": "iOS",
+        "X-WHOOP-Time-Zone": Intl.DateTimeFormat().resolvedOptions().timeZone,
+        Locale: "en_US",
+      },
+    });
 
-        if (!response.ok) {
-          if (response.status === 401 && !retried) {
-            retried = true;
-            await this.login();
-            continue;
-          }
-
-          throw new Error(
-            `Whoop API error: ${response.status} ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        return data;
-      } catch (error) {
-        if (
-          retried ||
-          !(error instanceof Error && error.message.includes("401"))
-        ) {
-          if (error instanceof Error) {
-            throw new Error(`Failed to fetch recovery data: ${error.message}`);
-          }
-          throw error;
-        }
-
-        retried = true;
-        await this.login();
-      }
+    if (resp.status === 401 && !retried) {
+      await this.login();
+      return this.request<T>(path, true);
     }
+
+    if (!resp.ok) throw new Error(`WHOOP API ${resp.status}: ${path}`);
+    return resp.json() as Promise<T>;
   }
 
-  /**
-   * Get strain deep dive data for a specific date
-   */
-  async getStrainDeepDive(date?: string): Promise<any> {
-    const dateParam = date || new Date().toISOString().split("T")[0];
-    const url = `${this.baseUrl}/home-service/v1/deep-dive/strain?date=${dateParam}`;
+  // ─── Paginated fetch helper for developer v2 endpoints ──────
 
-    let retried = false;
+  private async fetchPaginated<T>(basePath: string, limit: number): Promise<T[]> {
+    const all: T[] = [];
+    let nextToken: string | undefined;
 
-    while (true) {
-      try {
-        const headers = await this.getHeaders();
-        const response = await fetch(url, {
-          method: "GET",
-          headers: Object.fromEntries(
-            Object.entries(headers).map(([key, value]) => [
-              key,
-              value as string,
-            ])
-          ),
-        });
+    while (all.length < limit) {
+      const batchSize = Math.min(limit - all.length, 25);
+      let path = `${basePath}${basePath.includes("?") ? "&" : "?"}limit=${batchSize}`;
+      if (nextToken) path += `&nextToken=${encodeURIComponent(nextToken)}`;
 
-        if (!response.ok) {
-          if (response.status === 401 && !retried) {
-            retried = true;
-            await this.login();
-            continue;
-          }
+      const data = await this.request<{ records: T[]; next_token?: string }>(path);
+      all.push(...(data.records || []));
 
-          throw new Error(
-            `Whoop API error: ${response.status} ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        return data;
-      } catch (error) {
-        if (
-          retried ||
-          !(error instanceof Error && error.message.includes("401"))
-        ) {
-          if (error instanceof Error) {
-            throw new Error(`Failed to fetch strain data: ${error.message}`);
-          }
-          throw error;
-        }
-
-        retried = true;
-        await this.login();
-      }
+      if (!data.next_token || data.records.length === 0) break;
+      nextToken = data.next_token;
     }
+
+    return all.slice(0, limit);
   }
 
-  /**
-   * Get healthspan data for a specific date
-   */
-  async getHealthspan(date?: string): Promise<any> {
-    const dateParam = date || new Date().toISOString().split("T")[0];
-    const url = `${this.baseUrl}/healthspan-service/v1/healthspan/bff?date=${dateParam}`;
+  // ─── Internal App API ────────────────────────────────────────
 
-    let retried = false;
-
-    while (true) {
-      try {
-        const headers = await this.getHeaders();
-        const response = await fetch(url, {
-          method: "GET",
-          headers: Object.fromEntries(
-            Object.entries(headers).map(([key, value]) => [
-              key,
-              value as string,
-            ])
-          ),
-        });
-
-        if (!response.ok) {
-          if (response.status === 401 && !retried) {
-            retried = true;
-            await this.login();
-            continue;
-          }
-
-          throw new Error(
-            `Whoop API error: ${response.status} ${response.statusText}`
-          );
-        }
-
-        const data = await response.json();
-        return data;
-      } catch (error) {
-        if (
-          retried ||
-          !(error instanceof Error && error.message.includes("401"))
-        ) {
-          if (error instanceof Error) {
-            throw new Error(
-              `Failed to fetch healthspan data: ${error.message}`
-            );
-          }
-          throw error;
-        }
-
-        retried = true;
-        await this.login();
-      }
-    }
+  async getHome(date: string): Promise<any> {
+    return this.request(`/home-service/v1/home?date=${date}`);
   }
 
-  /**
-   * Format home data into a human-readable string
-   */
-  formatHomeData(data: HomeResponse): string {
-    const metadata = data.metadata;
-    const live = metadata.whoop_live_metadata;
-    const cycle = metadata.cycle_metadata;
+  async getDeepDiveSleep(date: string): Promise<any> {
+    return this.request(`/home-service/v1/deep-dive/sleep?date=${date}`);
+  }
 
-    const lines = [
-      "🏠 WHOOP HOME DATA",
-      "══════════════════",
-      "",
-      `📅 Date: ${cycle.cycle_day} (${cycle.cycle_date_display})`,
-      `🔄 Cycle ID: ${cycle.cycle_id}`,
-      `💤 Sleep State: ${cycle.sleep_state}`,
-      "",
-      "📊 LIVE METRICS",
-      "───────────────",
-      `  Recovery: ${live.recovery_score}%`,
-      `  Strain: ${live.day_strain.toFixed(1)}`,
-      `  Sleep: ${(live.ms_of_sleep / (1000 * 60 * 60)).toFixed(1)} hours`,
-      `  Calories: ${live.calories}`,
-      "",
-    ];
+  async getDeepDiveRecovery(date: string): Promise<any> {
+    return this.request(`/home-service/v1/deep-dive/recovery?date=${date}`);
+  }
 
-    // Add gauges from header
-    if (data.header?.content?.gauges) {
-      lines.push("🎯 SCORES", "─────────");
-      data.header.content.gauges.forEach((gauge) => {
-        lines.push(
-          `  ${gauge.title}: ${gauge.score_display}${gauge.score_display_suffix || ""} (${Math.round(gauge.gauge_fill_percentage * 100)}%)`
-        );
-      });
-      lines.push("");
-    }
+  async getDeepDiveStrain(date: string): Promise<any> {
+    return this.request(`/home-service/v1/deep-dive/strain?date=${date}`);
+  }
 
-    return lines.join("\n");
+  async getSleepLastNight(date: string): Promise<any> {
+    return this.request(`/home-service/v1/deep-dive/sleep/last-night?date=${date}`);
+  }
+
+  async getWidgetOverview(): Promise<any> {
+    return this.request("/home-service/v1/widget/overview");
+  }
+
+  async getRecoveryCalendar(date: string): Promise<any> {
+    return this.request(`/home-service/v1/calendar/recovery?date=${date}`);
+  }
+
+  async getHealthspan(date: string): Promise<any> {
+    return this.request(`/healthspan-service/v1/healthspan/bff?date=${date}`);
+  }
+
+  async getHealthTab(): Promise<any> {
+    return this.request("/health-tab-bff/v1/health-tab");
+  }
+
+  async getBehaviorImpact(): Promise<any> {
+    return this.request("/behavior-impact-service/v1/impact");
+  }
+
+  async getSleepNeed(): Promise<any> {
+    return this.request("/coaching-service/v2/sleepneed");
+  }
+
+  // ─── Developer v2 API (structured, paginated) ───────────────
+
+  async getRecoveryV2(limit: number = 7): Promise<any[]> {
+    return this.fetchPaginated("/developer/v2/recovery", limit);
+  }
+
+  async getSleepV2(limit: number = 7): Promise<any[]> {
+    return this.fetchPaginated("/developer/v2/activity/sleep", limit);
+  }
+
+  async getWorkoutsV2(limit: number = 7): Promise<any[]> {
+    return this.fetchPaginated("/developer/v2/activity/workout", limit);
+  }
+
+  async getCyclesV2(limit: number = 7): Promise<any[]> {
+    return this.fetchPaginated("/developer/v2/cycle", limit);
+  }
+
+  // ─── Static data ─────────────────────────────────────────────
+
+  async getBodyMeasurements(): Promise<{ height_meter: number; weight_kilogram: number; max_heart_rate: number }> {
+    return this.request("/developer/v1/user/measurement/body");
+  }
+
+  async getUserProfile(): Promise<{ user_id: number; email: string; first_name: string; last_name: string }> {
+    return this.request("/developer/v1/user/profile/basic");
   }
 }
