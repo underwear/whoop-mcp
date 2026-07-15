@@ -161,6 +161,12 @@ export class WhoopClient {
     return this.request(`/healthspan-service/v1/healthspan/bff?date=${date}`);
   }
 
+  // Real-time Stress Monitor (0.0–3.0 scale).
+  async getStress(timestamp?: string): Promise<any> {
+    const ts = timestamp || new Date().toISOString();
+    return this.request(`/health-service/v2/stress-bff?timestamp=${encodeURIComponent(ts)}`);
+  }
+
   async getHealthTab(): Promise<any> {
     return this.request("/health-tab-bff/v1/health-tab");
   }
