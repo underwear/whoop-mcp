@@ -5,6 +5,7 @@ import { registerSleepTool } from "./tools/sleep";
 import { registerRecoveryTool } from "./tools/recovery";
 import { registerStrainTool } from "./tools/strain";
 import { registerHealthspanTool } from "./tools/healthspan";
+import { registerStressTool } from "./tools/stress";
 import { registerBodyTool } from "./tools/body";
 import { registerJournalTool } from "./tools/journal";
 import { registerCalendarTool } from "./tools/calendar";
@@ -27,6 +28,7 @@ export function createWhoopMcpServer(config: WhoopMcpServerConfig) {
   registerRecoveryTool(server, client);
   registerStrainTool(server, client);
   registerHealthspanTool(server, client);
+  registerStressTool(server, client);
   registerBodyTool(server, client);
   registerJournalTool(server, client);
   registerCalendarTool(server, client);
